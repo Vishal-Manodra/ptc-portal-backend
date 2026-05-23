@@ -1,0 +1,8 @@
+venv/
+venv312/
+__pycache__/
+*.pyc
+.env
+captcha.png
+gst_output/
+node_modules/
