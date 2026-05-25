@@ -1,3 +1,274 @@
+<<<<<<< HEAD
+from fastapi import APIRouter, HTTPException, Depends
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from database import get_db
+from models import Client, GstFiling, User, WhatsappMessage
+from auth import admin_or_employee
+from routes.whatsapp import send_whatsapp_message
+from typing import List, Optional
+from datetime import datetime
+
+from gst_scraper import (
+    start_gst_search,
+    submit_captcha_and_scrape
+)
+
+router = APIRouter(tags=["GST"])
+
+
+class GstCaptchaRequest(BaseModel):
+    gstin: str
+
+
+class VerifyCaptchaRequest(BaseModel):
+    session_id: str
+    captcha_text: str
+
+
+class GstFilingUpdatePayload(BaseModel):
+    client_id: int
+    financial_year: str
+    month: str
+    return_type: str
+    filing_status: str
+    filing_date: Optional[str] = None
+    extend_date: Optional[str] = None
+
+
+class GstRemindPayload(BaseModel):
+    client_ids: List[int]
+    message_template: str
+
+
+@router.post("/gst/get-captcha")
+async def get_captcha(
+    request: GstCaptchaRequest
+):
+    try:
+
+        result = await start_gst_search(
+            request.gstin
+        )
+
+        return {
+            "success": True,
+
+            "session_id":
+                result["session_id"],
+
+            "captcha_image":
+                result["captcha_image"],
+
+            "captcha_path":
+                result.get(
+                    "captcha_path"
+                )
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+@router.post("/gst/verify")
+async def verify_captcha(
+    request: VerifyCaptchaRequest
+):
+    try:
+
+        scraped_data = await submit_captcha_and_scrape(
+            request.session_id,
+            request.captcha_text
+        )
+
+        return {
+            "success": True,
+            "data": scraped_data
+        }
+
+    except Exception as e:
+
+        raise HTTPException(
+            status_code=400,
+            detail=f"Verification failed: {str(e)}"
+        )
+
+
+@router.get("/gst/filings", response_model=List[dict])
+def get_gst_filings(
+    financial_year: str,
+    month: str,
+    return_type: str,
+    filing_status: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee)
+):
+    # Fetch all clients with a GSTIN
+    query = db.query(Client).filter(Client.gstin != None)
+    if current_user.role == "employee":
+        query = query.filter(Client.assigned_employee_id == current_user.id)
+    clients = query.all()
+
+    # Fetch database filings
+    filings = db.query(GstFiling).filter(
+        GstFiling.financial_year == financial_year,
+        GstFiling.month == month,
+        GstFiling.return_type == return_type
+    ).all()
+
+    filing_map = {f.client_id: f for f in filings}
+
+    results = []
+    for client in clients:
+        filing_record = filing_map.get(client.id)
+        
+        status = filing_record.filing_status if filing_record else "Pending"
+        filing_date = filing_record.filing_date if filing_record else None
+        extend_date = filing_record.extend_date if filing_record else None
+        last_check = filing_record.last_check.strftime("%d-%m-%Y %H:%M:%S") if (filing_record and filing_record.last_check) else None
+
+        # Filter by filing status if requested
+        if filing_status and filing_status != "All" and status.lower() != filing_status.lower():
+            continue
+
+        # Extract State from GSTIN (first 2 digits)
+        state_code = client.gstin[:2] if client.gstin and len(client.gstin) >= 2 else ""
+        state_map = {
+            "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
+            "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
+            "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
+            "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
+            "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh",
+            "24": "Gujarat", "26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra",
+            "29": "Karnataka", "30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu",
+            "34": "Puducherry", "35": "Andaman & Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh",
+            "38": "Ladakh"
+        }
+        state_name = state_map.get(state_code, "Unknown")
+
+        results.append({
+            "client_id": client.id,
+            "business_name": client.business_name,
+            "file_no": f"PTC-{client.id:03d}",
+            "gstin": client.gstin,
+            "state": state_name,
+            "taxpayer_type": client.taxpayer_type or "Regular",
+            "filing_frequency": client.filing_type or "Monthly",
+            "return_period": f"{month} {financial_year.split(' - ')[0]}",
+            "period": return_type,
+            "extend_date": extend_date or "—",
+            "filing_status": status,
+            "filing_date": filing_date or "—",
+            "mobile": client.mobile or client.phone or "—",
+            "last_check": last_check or "—"
+        })
+
+    return results
+
+
+@router.post("/gst/filings/update")
+def update_gst_filing(
+    payload: GstFilingUpdatePayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee)
+):
+    if current_user.role == "employee":
+        client = db.query(Client).filter(Client.id == payload.client_id).first()
+        if not client or client.assigned_employee_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not your assigned client")
+
+    record = db.query(GstFiling).filter(
+        GstFiling.client_id == payload.client_id,
+        GstFiling.financial_year == payload.financial_year,
+        GstFiling.month == payload.month,
+        GstFiling.return_type == payload.return_type
+    ).first()
+    
+    if record:
+        record.filing_status = payload.filing_status
+        record.filing_date = payload.filing_date
+        record.extend_date = payload.extend_date
+        record.last_check = datetime.now()
+    else:
+        record = GstFiling(
+            client_id=payload.client_id,
+            financial_year=payload.financial_year,
+            month=payload.month,
+            return_type=payload.return_type,
+            filing_status=payload.filing_status,
+            filing_date=payload.filing_date,
+            extend_date=payload.extend_date,
+            last_check=datetime.now()
+        )
+        db.add(record)
+
+    db.commit()
+    db.refresh(record)
+    return {"success": True, "data": {
+        "id": record.id,
+        "client_id": record.client_id,
+        "filing_status": record.filing_status,
+        "filing_date": record.filing_date,
+        "extend_date": record.extend_date,
+        "last_check": record.last_check.strftime("%d-%m-%Y %H:%M:%S")
+    }}
+
+
+@router.post("/gst/filings/remind")
+async def send_gst_reminders(
+    payload: GstRemindPayload,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee)
+):
+    success_count = 0
+    failed_clients = []
+
+    for cid in payload.client_ids:
+        client = db.query(Client).filter(Client.id == cid).first()
+        if not client:
+            failed_clients.append(f"Client {cid} not found")
+            continue
+
+        if current_user.role == "employee" and client.assigned_employee_id != current_user.id:
+            raise HTTPException(status_code=403, detail="Not your assigned client")
+
+        phone = client.mobile or client.phone
+        if not phone:
+            failed_clients.append(f"{client.business_name} (no phone number)")
+            continue
+
+        # Clean recipient's phone number
+        to_phone = "".join(filter(str.isdigit, phone))
+        if not to_phone.startswith("91") and len(to_phone) == 10:
+            to_phone = f"91{to_phone}"
+
+        # Personalize template
+        message = payload.message_template.replace("{business_name}", client.business_name)
+
+        try:
+            await send_whatsapp_message(to_phone=to_phone, message=message)
+            
+            # Log message in DB
+            db.add(WhatsappMessage(
+                client_phone=to_phone,
+                direction="outbound",
+                message=message
+            ))
+            success_count += 1
+        except Exception as e:
+            failed_clients.append(f"{client.business_name} (send error: {str(e)})")
+
+    db.commit()
+    return {
+        "success": True,
+        "success_count": success_count,
+        "failed_clients": failed_clients
+    }
+=======
 # routes/gst.py
 # FastAPI routes for GST — captcha fetch, verify/scrape, filing CRUD, WhatsApp reminders.
 # No Playwright logic here — all scraping is in gst_scraper.py.
