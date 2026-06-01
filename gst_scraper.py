@@ -50,8 +50,31 @@ async def cleanup_stale_sessions():
                         session["playwright"].stop()
                     except Exception:
                         pass
+
+def _cleanup_old_sessions():
+
+    global _active_sessions
+
+    with _sessions_lock:
+
+        sessions = list(_active_sessions.items())
+
+        _active_sessions.clear()
+
+    for sid, sess in sessions:
+
+        try:
+            sess["browser"].close()
+        except Exception:
+            pass
+
+        try:
+            sess["playwright"].stop()
+        except Exception:
+            pass
 # ── CAPTCHA FETCH ──────────────────────────────────────────────────────────
 def _start_gst_search_sync(gstin: str) -> dict:
+    _cleanup_old_sessions()
     p = sync_playwright().start()
     browser = p.chromium.launch(
         headless=False,
@@ -97,6 +120,11 @@ def _submit_captcha_and_scrape_sync(session_id: str, captcha_text: str) -> dict:
         raise ValueError("Session expired or invalid. Please fetch a new captcha.")
     browser = session["browser"]
     page = session["page"]
+    if page.is_closed():
+
+        raise RuntimeError(
+            "GST session expired. Please fetch captcha again."
+        )
     p = session["playwright"]
     try:
         # Fill captcha

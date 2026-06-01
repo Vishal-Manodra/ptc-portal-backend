@@ -13,13 +13,12 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, joinedload
 from typing import List
 from database import get_db
-from models import Client, User, Service, ClientService,Document, Task, Director
+from models import Client, User, Service, ClientService,Document, Task, Director, GstFiling
 from schemas import (
     ClientCreate, ClientUpdate, ClientSummary,
     ClientDetail, ClientServiceOut, ClientServiceUpdate
 )
 from auth import admin_only, admin_or_employee, any_authenticated_user
-
 router = APIRouter(prefix="/clients", tags=["Clients"])
 
 # FETCH API FOR GST DETAILS USING GSTIN
@@ -148,24 +147,53 @@ def create_client(
         if not emp or emp.role not in ("admin", "employee"):
             raise HTTPException(status_code=400, detail="Invalid employee ID")
 
-    client_data = data.model_dump(exclude={"directors"})
+    client_data = data.model_dump(
+        exclude={"directors"}
+    )
+
+    obsolete_fields = [
+        "gstr1_iff_status",
+        "gstr3b_status",
+        "gstr4_status",
+        "cmp08_status",
+        "gstr4_annual_status",
+        "gstr9_annual_status",
+        "gstr9c_status",
+        "gstr1a_status",
+        "gstr1_iff_status_prev",
+        "gstr3b_status_prev",
+        "gstr4_status_prev",
+        "cmp08_status_prev",
+        "gstr4_annual_status_prev",
+        "gstr9_annual_status_prev",
+        "gstr9c_status_prev",
+        "gstr1a_status_prev",
+    ]
+
+    for field in obsolete_fields:
+        client_data.pop(field, None)
+
     new_client = Client(**client_data)
 
     if data.directors:
         for d in data.directors:
-            new_client.directors.append(Director(**d.model_dump()))
+            new_client.directors.append(
+                Director(**d.model_dump()))
 
     db.add(new_client)
     db.commit()
     db.refresh(new_client)
+    return (
+        db.query(Client)
+        .options(
+            joinedload(Client.assigned_employee),
+            joinedload(Client.services).joinedload(ClientService.service),
+        )
+        .filter(Client.id == new_client.id)
+        .first()
+    )
 
-    # Reload with relationships for the response
-    return db.query(Client).options(
-        joinedload(Client.assigned_employee),
-        joinedload(Client.services).joinedload(ClientService.service),
-    ).filter(Client.id == new_client.id).first()
-
-
+    
 # ── GET CLIENT DETAIL ─────────────────────────────────────────────────────────
 
 @router.get("/{client_id}", response_model=ClientDetail)
@@ -197,6 +225,41 @@ def get_client(
 
     return client
 
+#------Return Filing-------------------------------------
+
+@router.get("/{client_id}/gst-filings")
+def get_client_gst_filings(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(any_authenticated_user),
+):
+
+    client = (
+        db.query(Client)
+        .filter(Client.id == client_id)
+        .first()
+    )
+
+    if not client:
+        raise HTTPException(
+            status_code=404,
+            detail="Client not found"
+        )
+
+    filings = (
+        db.query(GstFiling)
+        .filter(
+            GstFiling.client_id == client_id
+        )
+        .order_by(
+            GstFiling.financial_year.desc(),
+            GstFiling.return_type,
+            GstFiling.month
+        )
+        .all()
+    )
+
+    return filings
 # ── UPDATE CLIENT ─────────────────────────────────────────────────────────────
 
 @router.patch("/{client_id}", response_model=ClientSummary)

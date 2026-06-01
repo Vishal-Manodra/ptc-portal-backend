@@ -1,279 +1,10 @@
-<<<<<<< HEAD
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from sqlalchemy.orm import Session
-from database import get_db
-from models import Client, GstFiling, User, WhatsappMessage
-from auth import admin_or_employee
-from routes.whatsapp import send_whatsapp_message
-from typing import List, Optional
-from datetime import datetime
-
-from gst_scraper import (
-    start_gst_search,
-    submit_captcha_and_scrape
-)
-
-router = APIRouter(tags=["GST"])
-
-
-class GstCaptchaRequest(BaseModel):
-    gstin: str
-
-
-class VerifyCaptchaRequest(BaseModel):
-    session_id: str
-    captcha_text: str
-
-
-class GstFilingUpdatePayload(BaseModel):
-    client_id: int
-    financial_year: str
-    month: str
-    return_type: str
-    filing_status: str
-    filing_date: Optional[str] = None
-    extend_date: Optional[str] = None
-
-
-class GstRemindPayload(BaseModel):
-    client_ids: List[int]
-    message_template: str
-
-
-@router.post("/gst/get-captcha")
-async def get_captcha(
-    request: GstCaptchaRequest
-):
-    try:
-
-        result = await start_gst_search(
-            request.gstin
-        )
-
-        return {
-            "success": True,
-
-            "session_id":
-                result["session_id"],
-
-            "captcha_image":
-                result["captcha_image"],
-
-            "captcha_path":
-                result.get(
-                    "captcha_path"
-                )
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
-
-
-@router.post("/gst/verify")
-async def verify_captcha(
-    request: VerifyCaptchaRequest
-):
-    try:
-
-        scraped_data = await submit_captcha_and_scrape(
-            request.session_id,
-            request.captcha_text
-        )
-
-        return {
-            "success": True,
-            "data": scraped_data
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=400,
-            detail=f"Verification failed: {str(e)}"
-        )
-
-
-@router.get("/gst/filings", response_model=List[dict])
-def get_gst_filings(
-    financial_year: str,
-    month: str,
-    return_type: str,
-    filing_status: Optional[str] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_or_employee)
-):
-    # Fetch all clients with a GSTIN
-    query = db.query(Client).filter(Client.gstin != None)
-    if current_user.role == "employee":
-        query = query.filter(Client.assigned_employee_id == current_user.id)
-    clients = query.all()
-
-    # Fetch database filings
-    filings = db.query(GstFiling).filter(
-        GstFiling.financial_year == financial_year,
-        GstFiling.month == month,
-        GstFiling.return_type == return_type
-    ).all()
-
-    filing_map = {f.client_id: f for f in filings}
-
-    results = []
-    for client in clients:
-        filing_record = filing_map.get(client.id)
-        
-        status = filing_record.filing_status if filing_record else "Pending"
-        filing_date = filing_record.filing_date if filing_record else None
-        extend_date = filing_record.extend_date if filing_record else None
-        last_check = filing_record.last_check.strftime("%d-%m-%Y %H:%M:%S") if (filing_record and filing_record.last_check) else None
-
-        # Filter by filing status if requested
-        if filing_status and filing_status != "All" and status.lower() != filing_status.lower():
-            continue
-
-        # Extract State from GSTIN (first 2 digits)
-        state_code = client.gstin[:2] if client.gstin and len(client.gstin) >= 2 else ""
-        state_map = {
-            "01": "Jammu & Kashmir", "02": "Himachal Pradesh", "03": "Punjab", "04": "Chandigarh",
-            "05": "Uttarakhand", "06": "Haryana", "07": "Delhi", "08": "Rajasthan", "09": "Uttar Pradesh",
-            "10": "Bihar", "11": "Sikkim", "12": "Arunachal Pradesh", "13": "Nagaland", "14": "Manipur",
-            "15": "Mizoram", "16": "Tripura", "17": "Meghalaya", "18": "Assam", "19": "West Bengal",
-            "20": "Jharkhand", "21": "Odisha", "22": "Chhattisgarh", "23": "Madhya Pradesh",
-            "24": "Gujarat", "26": "Dadra and Nagar Haveli and Daman and Diu", "27": "Maharashtra",
-            "29": "Karnataka", "30": "Goa", "31": "Lakshadweep", "32": "Kerala", "33": "Tamil Nadu",
-            "34": "Puducherry", "35": "Andaman & Nicobar Islands", "36": "Telangana", "37": "Andhra Pradesh",
-            "38": "Ladakh"
-        }
-        state_name = state_map.get(state_code, "Unknown")
-
-        results.append({
-            "client_id": client.id,
-            "business_name": client.business_name,
-            "file_no": f"PTC-{client.id:03d}",
-            "gstin": client.gstin,
-            "state": state_name,
-            "taxpayer_type": client.taxpayer_type or "Regular",
-            "filing_frequency": client.filing_type or "Monthly",
-            "return_period": f"{month} {financial_year.split(' - ')[0]}",
-            "period": return_type,
-            "extend_date": extend_date or "—",
-            "filing_status": status,
-            "filing_date": filing_date or "—",
-            "mobile": client.mobile or client.phone or "—",
-            "last_check": last_check or "—"
-        })
-
-    return results
-
-
-@router.post("/gst/filings/update")
-def update_gst_filing(
-    payload: GstFilingUpdatePayload,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_or_employee)
-):
-    if current_user.role == "employee":
-        client = db.query(Client).filter(Client.id == payload.client_id).first()
-        if not client or client.assigned_employee_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not your assigned client")
-
-    record = db.query(GstFiling).filter(
-        GstFiling.client_id == payload.client_id,
-        GstFiling.financial_year == payload.financial_year,
-        GstFiling.month == payload.month,
-        GstFiling.return_type == payload.return_type
-    ).first()
-    
-    if record:
-        record.filing_status = payload.filing_status
-        record.filing_date = payload.filing_date
-        record.extend_date = payload.extend_date
-        record.last_check = datetime.now()
-    else:
-        record = GstFiling(
-            client_id=payload.client_id,
-            financial_year=payload.financial_year,
-            month=payload.month,
-            return_type=payload.return_type,
-            filing_status=payload.filing_status,
-            filing_date=payload.filing_date,
-            extend_date=payload.extend_date,
-            last_check=datetime.now()
-        )
-        db.add(record)
-
-    db.commit()
-    db.refresh(record)
-    return {"success": True, "data": {
-        "id": record.id,
-        "client_id": record.client_id,
-        "filing_status": record.filing_status,
-        "filing_date": record.filing_date,
-        "extend_date": record.extend_date,
-        "last_check": record.last_check.strftime("%d-%m-%Y %H:%M:%S")
-    }}
-
-
-@router.post("/gst/filings/remind")
-async def send_gst_reminders(
-    payload: GstRemindPayload,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(admin_or_employee)
-):
-    success_count = 0
-    failed_clients = []
-
-    for cid in payload.client_ids:
-        client = db.query(Client).filter(Client.id == cid).first()
-        if not client:
-            failed_clients.append(f"Client {cid} not found")
-            continue
-
-        if current_user.role == "employee" and client.assigned_employee_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Not your assigned client")
-
-        phone = client.mobile or client.phone
-        if not phone:
-            failed_clients.append(f"{client.business_name} (no phone number)")
-            continue
-
-        # Clean recipient's phone number
-        to_phone = "".join(filter(str.isdigit, phone))
-        if not to_phone.startswith("91") and len(to_phone) == 10:
-            to_phone = f"91{to_phone}"
-
-        # Personalize template
-        message = payload.message_template.replace("{business_name}", client.business_name)
-
-        try:
-            await send_whatsapp_message(to_phone=to_phone, message=message)
-            
-            # Log message in DB
-            db.add(WhatsappMessage(
-                client_phone=to_phone,
-                direction="outbound",
-                message=message
-            ))
-            success_count += 1
-        except Exception as e:
-            failed_clients.append(f"{client.business_name} (send error: {str(e)})")
-
-    db.commit()
-    return {
-        "success": True,
-        "success_count": success_count,
-        "failed_clients": failed_clients
-    }
-=======
 # routes/gst.py
 # FastAPI routes for GST — captcha fetch, verify/scrape, filing CRUD, WhatsApp reminders.
 # No Playwright logic here — all scraping is in gst_scraper.py.
 
 from fastapi import APIRouter, HTTPException, Depends
+from httpcore import request
+from httpcore import request
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -314,11 +45,9 @@ class GstRemindPayload(BaseModel):
     message_template: str  # Use {business_name} as placeholder
 
 
-# ── Filing status column map — keeps the save logic DRY ──────────────────────
+# ── Helper functions ──────────────────────────────────────────────────────────
 
-
-
-def _save_scraped_data_to_client(client: Client, scraped: dict, db) -> None:
+def _save_scraped_data_to_client(client: Client, scraped: dict, db: Session) -> None:
     """Writes all scraped fields from the GST portal onto the Client ORM object."""
 
     # Basic info
@@ -330,64 +59,70 @@ def _save_scraped_data_to_client(client: Client, scraped: dict, db) -> None:
     client.gstin_status          = scraped.get("status")
 
     # Filing statuses
-    filings = scraped.get("filings", {})
-    current = filings.get("current", {})
-    previous = filings.get("previous", {})
-    # ── Save GST filing history ─────────────────────────────
-
-    filings = scraped.get("filings", {})
-
+    filings = scraped.get("filings") or {}
     all_periods = {
-        "current": filings.get("current", {}),
-        "previous": filings.get("previous", {}),
+        "current": filings.get("current") or {},
+        "previous": filings.get("previous") or {},
     }
 
     for fy_type, fy_data in all_periods.items():
+        if not isinstance(fy_data, dict):
+            continue
         for return_type, months_data in fy_data.items():
-
+            if not isinstance(months_data, dict):
+                continue
             for month_key, filing_data in months_data.items():
-
+                if not isinstance(filing_data, dict):
+                    continue
                 financial_year = filing_data.get("fy")
+                month_name = filing_data.get("period")
+                if not financial_year or not month_name:
+                    continue
+                
                 existing = db.query(GstFiling).filter(
                     GstFiling.client_id == client.id,
                     GstFiling.financial_year == financial_year,
-                    GstFiling.month == filing_data.get("period"),
+                    GstFiling.month == month_name,
                     GstFiling.return_type == return_type,
                 ).first()
 
                 if existing:
-
-                    existing.filing_status = filing_data.get("status")
+                    existing.filing_status = filing_data.get("status") or "Pending"
                     existing.filing_date = filing_data.get("date")
                     existing.last_check = datetime.now()
-
                 else:
-
+                    print("INSERTING GST FILINGS")
+                    print(
+                        "INSERT:",
+                        financial_year,
+                        month_name,
+                        return_type
+                    )
                     db.add(
                         GstFiling(
                             client_id=client.id,
                             financial_year=financial_year,
-                            month=filing_data.get("period"),
+                            month=month_name,
                             return_type=return_type,
-                            filing_status=filing_data.get("status"),
+                            filing_status=filing_data.get("status") or "Pending",
                             filing_date=filing_data.get("date"),
                             last_check=datetime.now(),
                         )
                     )
     
     summary = {}
-
     for fy_type, fy_data in all_periods.items():
-
+        if not isinstance(fy_data, dict):
+            continue
         for return_type, months_data in fy_data.items():
-
-            latest_month = next(
-                iter(months_data.values()),
-                None
-            )
-
+            if not isinstance(months_data, dict):
+                continue
+            latest_month = None
+            for key, val in months_data.items():
+                if isinstance(val, dict):
+                    latest_month = val
+                    break
             if latest_month:
-
                 summary[return_type] = {
                     "status": latest_month.get("status"),
                     "date": latest_month.get("date"),
@@ -396,6 +131,53 @@ def _save_scraped_data_to_client(client: Client, scraped: dict, db) -> None:
                 }
     client.gst_summary = summary
     client.last_filing_check = datetime.now()
+
+
+def month_matches(db_month: str, query_month: str) -> bool:
+    if not db_month or not query_month:
+        return False
+    if query_month == "All":
+        return True
+        
+    db_m = db_month.lower()
+    q_m = query_month.lower()
+    
+    # 1. Direct or substring match
+    if q_m in db_m:
+        return True
+    
+    # 2. 3-letter abbreviation match
+    abbreviations = {
+        "january": "jan", "february": "feb", "march": "mar",
+        "april": "apr", "may": "may", "june": "jun",
+        "july": "jul", "august": "aug", "september": "sep",
+        "october": "oct", "november": "nov", "december": "dec"
+    }
+    q_abbr = abbreviations.get(q_m, q_m[:3])
+    if q_abbr in db_m:
+        return True
+        
+    # 3. Quarter mappings
+    quarters = {
+        "april": ["q1", "apr-jun", "april-june"],
+        "may": ["q1", "apr-jun", "april-june"],
+        "june": ["q1", "apr-jun", "april-june"],
+        "july": ["q2", "jul-sep", "july-september"],
+        "august": ["q2", "jul-sep", "july-september"],
+        "september": ["q2", "jul-sep", "july-september"],
+        "october": ["q3", "oct-dec", "october-december"],
+        "november": ["q3", "oct-dec", "october-december"],
+        "december": ["q3", "oct-dec", "october-december"],
+        "january": ["q4", "jan-mar", "january-march"],
+        "february": ["q4", "jan-mar", "january-march"],
+        "march": ["q4", "jan-mar", "january-march"]
+    }
+    
+    for term in quarters.get(q_m, []):
+        if term in db_m:
+            return True
+            
+    return False
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -423,7 +205,13 @@ async def get_captcha(request: GstCaptchaRequest):
 async def verify_captcha(
     request: VerifyCaptchaRequest,
     db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee),
 ):
+    print("=" * 80)
+    print("VERIFY ROUTE HIT")
+    print("REQUEST =", request)
+    print("CLIENT ID =",request.client_id)
+    print("=" * 80)
     """
     Step 2: Submit the captcha, scrape the result page.
     If client_id is provided, scraped data is saved to that client record.
@@ -433,7 +221,6 @@ async def verify_captcha(
             request.session_id, request.captcha_text
         )
     except ValueError as e:
-        # Session expired or not found
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         import traceback
@@ -444,15 +231,16 @@ async def verify_captcha(
     if request.client_id:
         client = db.query(Client).filter(Client.id == request.client_id).first()
         if client:
-            _save_scraped_data_to_client(client, scraped,db)
+            if current_user.role == "employee" and client.assigned_employee_id != current_user.id:
+                raise HTTPException(status_code=403, detail="Not your assigned client.")
+            _save_scraped_data_to_client(client, scraped, db)
             db.commit()
         else:
-            # Non-fatal — still return scraped data, just warn
             scraped["_warning"] = f"client_id {request.client_id} not found; data not saved."
 
     return {"success": True, "data": scraped}
-
-
+    print("CLIENT ID RECEIVED:", request.client_id)
+    
 @router.get("/gst/filings", response_model=List[dict])
 def get_gst_filings(
     financial_year: str,
@@ -469,42 +257,99 @@ def get_gst_filings(
         query = query.filter(Client.assigned_employee_id == current_user.id)
     clients = query.all()
 
+    # Determine return types to query
+    if return_type == "All" or not return_type:
+        returns_to_query = [
+            "gstr1_iff", "gstr3b", "cmp08", "gstr4",
+            "gstr4_annual", "gstr9_annual", "gstr9c", "gstr1a"
+        ]
+    else:
+        returns_to_query = [return_type]
+
+    # Fetch all database filings for this FY and return types
     filings = db.query(GstFiling).filter(
         GstFiling.financial_year == financial_year,
-        GstFiling.month == month,
-        GstFiling.return_type == return_type,
+        GstFiling.return_type.in_(returns_to_query),
     ).all()
-    filing_map = {f.client_id: f for f in filings}
 
     results = []
     for client in clients:
-        rec = filing_map.get(client.id)
-        status      = rec.filing_status if rec else "Pending"
-        filing_date = rec.filing_date   if rec else None
-        extend_date = rec.extend_date   if rec else None
-        last_check  = (
-            rec.last_check.strftime("%d-%m-%Y %H:%M:%S")
-            if rec and rec.last_check else None
-        )
+        # Get filings for this specific client
+        client_filings = [f for f in filings if f.client_id == client.id]
+        
+        # Filter by month match
+        matching_filings = []
+        for rec in client_filings:
+            if month == "All" or not month or month_matches(rec.month, month):
+                matching_filings.append(rec)
+                
+        if not matching_filings:
+            status = "Pending"
+            
+            if filing_status and filing_status != "All" and status.lower() != filing_status.lower():
+                continue
+                
+            display_return_type = return_type if (return_type and return_type != "All") else "—"
+            display_month = month if (month and month != "All") else "—"
+            
+            if display_month != "—":
+                return_period = f"{display_month} {financial_year.split(' - ')[0]}"
+            else:
+                return_period = "—"
 
-        if filing_status and filing_status != "All" and status.lower() != filing_status.lower():
-            continue    
-        results.append({
-            "client_id":       client.id,
-            "business_name":   client.business_name,
-            "file_no":         f"PTC-{client.id:03d}",
-            "gstin":           client.gstin,
-            "state":           "—",
-            "taxpayer_type":   client.taxpayer_type or "Regular",
-            "filing_frequency":client.filing_type or "Monthly",
-            "return_period":   f"{month} {financial_year.split(' - ')[0]}",
-            "period":          return_type,
-            "extend_date":     extend_date or "—",
-            "filing_status":   status,
-            "filing_date":     filing_date or "—",
-            "mobile":          client.mobile or client.phone or "—",
-            "last_check":      last_check or "—",
-        })
+            results.append({
+                "id": f"pending-{client.id}-{return_type}-{month}",
+                "client_id": client.id,
+                "business_name": client.business_name,
+                "file_no": f"PTC-{client.id:03d}",
+                "gstin": client.gstin,
+                "state": "",
+                "taxpayer_type": client.taxpayer_type or "Regular",
+                "filing_frequency": client.filing_type or "Monthly",
+                "return_period": return_period,
+                "period": display_return_type,
+                "return_type": display_return_type,
+                "financial_year": financial_year,
+                "month": display_month,
+                "extend_date": "—",
+                "filing_status": status,
+                "filing_date": "—",
+                "mobile": client.mobile or client.phone or "—",
+                "last_check": "—",
+            })
+        else:
+            for rec in matching_filings:
+                status      = rec.filing_status or "Pending"
+                filing_date = rec.filing_date
+                extend_date = rec.extend_date
+                last_check  = (
+                    rec.last_check.strftime("%d-%m-%Y %H:%M:%S")
+                    if rec.last_check else None
+                )
+
+                if filing_status and filing_status != "All" and status.lower() != filing_status.lower():
+                    continue
+
+                results.append({
+                    "id": rec.id,
+                    "client_id": client.id,
+                    "business_name": client.business_name,
+                    "file_no": f"PTC-{client.id:03d}",
+                    "gstin": client.gstin,
+                    "state": "",
+                    "taxpayer_type": client.taxpayer_type or "Regular",
+                    "filing_frequency": client.filing_type or "Monthly",
+                    "return_period": f"{rec.month} {financial_year.split(' - ')[0]}",
+                    "period": rec.return_type,
+                    "return_type": rec.return_type,
+                    "financial_year": financial_year,
+                    "month": rec.month,
+                    "extend_date": extend_date or "—",
+                    "filing_status": status,
+                    "filing_date": filing_date or "—",
+                    "mobile": client.mobile or client.phone or "—",
+                    "last_check": last_check or "—",
+                })
 
     return results
 
