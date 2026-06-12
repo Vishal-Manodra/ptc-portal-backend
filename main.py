@@ -103,23 +103,3 @@ def root():
     return {"status": "PTC Portal API is running"}
 
 
-@app.get("/debug-loop", tags=["Health"])
-async def debug_loop():
-    loop = asyncio.get_running_loop()
-    return {"python": sys.executable, "loop": str(loop)}
-
-@app.get("/debug-thread")
-async def debug_thread():
-    import asyncio
-
-    def work():
-        from playwright.sync_api import sync_playwright
-
-        p = sync_playwright().start()
-        p.stop()
-
-        return "ok"
-
-    result = await asyncio.to_thread(work)
-
-    return {"result": result}
