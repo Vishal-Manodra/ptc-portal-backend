@@ -237,9 +237,9 @@ async def verify_captcha(
             db.commit()
         else:
             scraped["_warning"] = f"client_id {request.client_id} not found; data not saved."
-
-    return {"success": True, "data": scraped}
     print("CLIENT ID RECEIVED:", request.client_id)
+    return {"success": True, "data": scraped}
+    
     
 @router.get("/gst/filings", response_model=List[dict])
 def get_gst_filings(
@@ -350,6 +350,29 @@ def get_gst_filings(
                     "mobile": client.mobile or client.phone or "—",
                     "last_check": last_check or "—",
                 })
+
+    month_order = {
+    "April": 1,
+    "May": 2,
+    "June": 3,
+    "July": 4,
+    "August": 5,
+    "September": 6,
+    "October": 7,
+    "November": 8,
+    "December": 9,
+    "January": 10,
+    "February": 11,
+    "March": 12,
+}
+
+    results.sort(
+    key=lambda x: (
+        x["financial_year"],
+        month_order.get(x["month"], 0),
+    ),
+    reverse=True,
+)
 
     return results
 

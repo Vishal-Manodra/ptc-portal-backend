@@ -144,7 +144,7 @@ def create_client(
     # Validate assigned employee exists and has employee/admin role
     if data.assigned_employee_id:
         emp = db.query(User).filter(User.id == data.assigned_employee_id).first()
-        if not emp or emp.role not in ("admin", "employee"):
+        if not emp or emp.role not in ("admin", "manager", "employee"):
             raise HTTPException(status_code=400, detail="Invalid employee ID")
 
     client_data = data.model_dump(
@@ -261,6 +261,52 @@ def get_client_gst_filings(
 
     return filings
 # ── UPDATE CLIENT ─────────────────────────────────────────────────────────────
+@router.get("/{client_id}/gst-summary")
+def get_client_gst_summary(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(any_authenticated_user),
+):
+    print("GST SUMMARY REQUEST:", client_id)
+    client = (
+        db.query(Client)
+        .filter(Client.id == client_id)
+        .first()
+    )
+
+    if not client:
+        raise HTTPException(
+            status_code=404,
+            detail="Client not found"
+        )
+
+    filings = (
+        db.query(GstFiling)
+        .filter(
+            GstFiling.client_id == client_id
+        )
+        .all()
+    )
+
+    summary = {}
+
+    for filing in filings:
+        return_type = filing.return_type.lower()
+
+        if (
+            return_type not in summary
+            or filing.financial_year >
+            summary[return_type]["financial_year"]
+        ):
+            summary[return_type] = {
+                "status": filing.filing_status,
+                "financial_year": filing.financial_year,
+                "month": filing.month,
+                "filing_date": filing.filing_date,
+            }
+
+    return summary
+
 
 @router.patch("/{client_id}", response_model=ClientSummary)
 def update_client(

@@ -100,11 +100,29 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         return {"status": "ignored"}
 
     # Log the incoming message
-    db.add(WhatsappMessage(
-        client_phone=sender_phone,
-        direction="inbound",
-        message=incoming_text,
-    ))
+    client = (
+    db.query(Client)
+    .filter(Client.mobile == sender_phone)
+    .first()
+)
+
+    db.add(
+        WhatsappMessage(
+            client_id=client.id if client else None,
+            client_phone=sender_phone,
+            employee_id=(
+                client.assigned_employee_id
+                if client
+                else None
+            ),
+            direction="inbound",
+            sender_type="client",
+            message_type="text",
+            message=incoming_text,
+            is_read=False,
+        )
+    )
+
     db.commit()
 
     # Look up client by phone number
@@ -146,14 +164,30 @@ async def receive_message(request: Request, db: Session = Depends(get_db)):
         await send_whatsapp_message(sender_phone, reply)
 
     # Log outbound message
-    db.add(WhatsappMessage(
-        client_phone=sender_phone,
-        direction="outbound",
-        message=reply,
-    ))
-    db.commit()
+    client = (
+    db.query(Client)
+    .filter(Client.mobile == sender_phone)
+    .first()
+)
 
-    return {"status": "ok"}
+    db.add(
+        WhatsappMessage(
+            client_id=client.id if client else None,
+            client_phone=sender_phone,
+            employee_id=(
+                client.assigned_employee_id
+                if client
+                else None
+            ),
+            direction="outbound",
+            sender_type="system",
+            message_type="text",
+            message=reply,
+            is_read=True,
+        )
+    )
+
+    db.commit()
 
 
 # ── HELPER: FIND CLIENT BY PHONE ──────────────────────────────────────────────
@@ -364,11 +398,138 @@ async def send_document_to_whatsapp(
     )
 
     # Log outbound entry
-    db.add(WhatsappMessage(
-        client_phone=to_phone,
-        direction="outbound",
-        message=f"Directly shared file: {doc.file_name}",
-    ))
+    client = (
+    db.query(Client)
+    .filter(Client.mobile == to_phone)
+    .first()
+)
+
+    db.add(
+        WhatsappMessage(
+            client_id=client.id if client else None,
+            client_phone=to_phone,
+            employee_id=(
+                client.assigned_employee_id
+                if client
+                else None
+            ),
+            direction="outbound",
+            sender_type="employee",
+            message_type="document",
+            message=f"Directly shared file: {doc.file_name}",
+            is_read=True,
+        )
+    )
+    
     db.commit()
 
     return {"message": f"Document '{doc.file_name}' successfully sent to client WhatsApp number: +{to_phone}"}
+
+@router.get("/conversations")
+def get_conversations(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee),
+):
+    query = db.query(Client)
+
+    if current_user.role == "employee":
+        query = query.filter(
+            Client.assigned_employee_id == current_user.id
+        )
+
+    clients = query.all()
+
+    result = []
+
+    for client in clients:
+        latest = (
+            db.query(WhatsappMessage)
+            .filter(
+                WhatsappMessage.client_id == client.id
+            )
+            .order_by(
+                WhatsappMessage.created_at.desc()
+            )
+            .first()
+        )
+
+        unread = (
+            db.query(WhatsappMessage)
+            .filter(
+                WhatsappMessage.client_id == client.id,
+                WhatsappMessage.is_read == False,
+                WhatsappMessage.direction == "inbound",
+            )
+            .count()
+        )
+
+        result.append({
+            "client_id": client.id,
+            "business_name": client.business_name,
+            "phone": client.mobile,
+            "last_message": latest.message if latest else "",
+            "last_message_time":
+                latest.created_at if latest else None,
+            "unread_count": unread,
+        })
+
+    return result
+
+@router.get("/conversation/{client_id}")
+def get_conversation(
+    client_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(admin_or_employee),
+):
+    client = (
+        db.query(Client)
+        .filter(Client.id == client_id)
+        .first()
+    )
+
+    if not client:
+        raise HTTPException(
+            status_code=404,
+            detail="Client not found",
+        )
+
+    if (
+        current_user.role == "employee"
+        and client.assigned_employee_id != current_user.id
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Not your client",
+        )
+
+    messages = (
+        db.query(WhatsappMessage)
+        .filter(
+            WhatsappMessage.client_id == client_id
+        )
+        .order_by(
+            WhatsappMessage.created_at.asc()
+        )
+        .all()
+    )
+
+    return [
+        {
+            "id": m.id,
+            "message": m.message,
+            "direction": m.direction,
+            "sender_type": m.sender_type,
+            "created_at": m.created_at,
+        }
+        for m in messages
+    ]
+
+@router.get("/test-auth")
+def test_auth(
+    current_user: User = Depends(admin_or_employee),
+):
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "role": current_user.role,
+    }

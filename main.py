@@ -22,6 +22,8 @@ from routes.tasks import router as tasks_router
 from routes.whatsapp import router as whatsapp_router
 from routes.services import router as services_router
 from routes.gst import router as gst_router
+from routes.workflows import router as workflow_router
+
 
 # ── Lifespan — runs on startup and shutdown ───────────────────────────────────
 @asynccontextmanager
@@ -51,13 +53,13 @@ def custom_openapi():
         routes=app.routes,
     )
     schema["components"]["securitySchemes"] = {
-        "BearerAuth": {
+        "HTTPBearer": {
             "type": "http",
             "scheme": "bearer",
             "bearerFormat": "JWT",
         }
     }
-    schema["security"] = [{"BearerAuth": []}]
+    schema["security"] = [{"HTTPBearer": []}]
     app.openapi_schema = schema
     return app.openapi_schema
 
@@ -93,7 +95,7 @@ app.include_router(tasks_router)
 app.include_router(whatsapp_router)
 app.include_router(services_router)
 app.include_router(gst_router)
-
+app.include_router(workflow_router)
 
 # ── Utility endpoints ─────────────────────────────────────────────────────────
 @app.get("/", tags=["Health"])
@@ -105,3 +107,19 @@ def root():
 async def debug_loop():
     loop = asyncio.get_running_loop()
     return {"python": sys.executable, "loop": str(loop)}
+
+@app.get("/debug-thread")
+async def debug_thread():
+    import asyncio
+
+    def work():
+        from playwright.sync_api import sync_playwright
+
+        p = sync_playwright().start()
+        p.stop()
+
+        return "ok"
+
+    result = await asyncio.to_thread(work)
+
+    return {"result": result}
