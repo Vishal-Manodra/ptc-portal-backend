@@ -142,7 +142,6 @@ def google_login(request: GoogleLoginRequest, db: Session = Depends(get_db)):
 def register_user(
     user_data: UserCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(admin_only),   # only admin can create users
 ):
     """
     Creates a new user (employee or client login account).
