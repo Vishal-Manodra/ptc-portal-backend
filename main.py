@@ -24,7 +24,6 @@ from routes.services import router as services_router
 from routes.gst import router as gst_router
 from routes.workflows import router as workflow_router
 
-
 # ── Lifespan — runs on startup and shutdown ───────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -71,20 +70,14 @@ app.openapi = custom_openapi
 #   ALLOWED_ORIGINS=https://your-app.vercel.app,https://staging.your-app.vercel.app
 _raw_origins = os.getenv("ALLOWED_ORIGINS", "")
 _extra_origins = [o.strip() for o in _raw_origins.split(",") if o.strip()]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://localhost:5175",
-        "http://localhost:3000",
-        *_extra_origins,          # ← production Vercel URL goes in .env
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 
 # ── Routers ───────────────────────────────────────────────────────────────────
