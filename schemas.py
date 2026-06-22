@@ -79,12 +79,48 @@ class DocumentOut(BaseModel):
     created_at: datetime
     uploader: Optional[UserOut] = None
     client_service_id: Optional[int] = None
-
+    received_from: Optional[str]
+    received_by: Optional[str]
+    received_at: Optional[datetime]
+    returned_to: Optional[str]
+    returned_by: Optional[str]
+    returned_at: Optional[datetime]
+    remarks: Optional[str]
     class Config:
         from_attributes = True
 
 
 # ── TASK ──────────────────────────────────────────────────
+class DocumentRegisterCreate(BaseModel):
+    client_id: int
+    document_name: str
+    document_details: Optional[str] = None
+    collected_by: str
+    remarks: Optional[str] = None
+
+
+class DocumentRegisterReturn(BaseModel):
+    returned_to: str
+    returned_by: str
+    remarks: Optional[str] = None
+
+
+class DocumentRegisterOut(BaseModel):
+    id: int
+    client_id: int
+    document_name: str
+    document_details: Optional[str]
+    collected_by: str
+    collected_at: datetime
+    returned_to: Optional[str]
+    returned_by: Optional[str]
+    returned_at: Optional[datetime]
+    remarks: Optional[str]
+
+    class Config:
+        from_attributes = True
+
+
 class ClientMinOut(BaseModel):
     id: int
     business_name: str
@@ -417,3 +453,17 @@ class GstFilingUpdate(BaseModel):
     filing_status: str
     filing_date: Optional[str] = None
     extend_date: Optional[str] = None
+
+class DocumentCreate(BaseModel):
+    client_id: int
+    document_name: str
+    document_details: Optional[str] = None
+    collected_by: str
+    remarks: Optional[str] = None
+
+
+class DocumentReturn(BaseModel):
+    returned_to: str
+    returned_by: str
+    remarks: Optional[str] = None
+

@@ -23,6 +23,7 @@ from routes.whatsapp import router as whatsapp_router
 from routes.services import router as services_router
 from routes.gst import router as gst_router
 from routes.workflows import router as workflow_router
+from routes.document_register import router as document_register_router
 
 # ── Lifespan — runs on startup and shutdown ───────────────────────────────────
 @asynccontextmanager
@@ -89,6 +90,7 @@ app.include_router(whatsapp_router)
 app.include_router(services_router)
 app.include_router(gst_router)
 app.include_router(workflow_router)
+app.include_router(document_register_router)
 
 # ── Utility endpoints ─────────────────────────────────────────────────────────
 @app.get("/", tags=["Health"])

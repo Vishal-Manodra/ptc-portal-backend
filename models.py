@@ -3,6 +3,8 @@
 # The attributes = columns in that table.
 # SQLAlchemy handles all the SQL CREATE TABLE statements for us.
 
+from datetime import datetime
+
 from sqlalchemy import (
     Column, Integer, String, Text, Boolean,
     DateTime, Date, ForeignKey, JSON, CheckConstraint
@@ -150,6 +152,11 @@ class Client(Base):
     documents = relationship("Document", back_populates="client", cascade="all, delete")
     tasks = relationship("Task", back_populates="client", cascade="all, delete")
     directors = relationship("Director", back_populates="client", cascade="all, delete-orphan")
+    document_registers = relationship(
+        "DocumentRegister",
+        back_populates="client",
+        cascade="all, delete-orphan"
+    )
 
 class Service(Base):
     __tablename__ = "services"
@@ -198,7 +205,21 @@ class Document(Base):
     client = relationship("Client", back_populates="documents")
     client_service = relationship("ClientService", back_populates="documents")
     uploader = relationship("User",back_populates="uploaded_documents")
-
+    # REGISTER IN
+    received_from = Column(String, nullable=True)
+    received_by = Column(String, nullable=True)
+    received_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+    # REGISTER OUT
+    returned_to = Column(String, nullable=True)
+    returned_by = Column(String, nullable=True)
+    returned_at = Column(
+        DateTime,
+        nullable=True
+    )
+    remarks = Column(Text, nullable=True)
 
 class Task(Base):
     __tablename__ = "tasks"
@@ -639,3 +660,47 @@ class WorkflowTaskAttachment(Base):
     )
 
     uploader = relationship("User")
+
+class DocumentRegister(Base):
+    __tablename__ = "document_register"
+
+    id = Column(Integer, primary_key=True, index=True)
+
+    client_id = Column(
+        Integer,
+        ForeignKey("clients.id"),
+        nullable=False
+    )
+
+    document_name = Column(
+        String(255),
+        nullable=False
+    )
+
+    document_details = Column(Text)
+
+    collected_by = Column(
+        String(100),
+        nullable=False
+    )
+
+    collected_at = Column(
+        DateTime,
+        default=datetime.utcnow
+    )
+
+    returned_to = Column(
+        String(100),
+        nullable=True
+    )
+
+    returned_by = Column(
+        String(100),
+        nullable=True
+    )
+
+    returned_at = Column(DateTime, nullable=True)
+
+    remarks = Column(Text)
+
+    client = relationship("Client", back_populates="document_registers")
